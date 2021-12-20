@@ -1,0 +1,53 @@
+--owner: r karthik 
+--date: 2021-12-18 
+
+select * from warehouse
+
+create table outbound as 
+select * from warehouse
+where event_type = 'OutBound' 
+; 
+
+
+create table inbound as 
+select * from warehouse
+where event_type = 'InBound' 
+; 
+
+
+with cte1 as 
+( 
+  --Take the sum of all outbound units greater than that inbound shipment timeslot. 
+  select t1.id, max(t1.event_type) as event_type, max(t1.onhandquantity) as inboundqty, max(t1.onhandquantitydelta) as inboundqtydelta, max(t1.event_datetime) as event_datetime, sum(t2.onhandquantitydelta) as outboundqty
+  from inbound t1 
+  left join outbound t2 
+  on t2.event_datetime > t1.event_datetime
+  group by 1 
+ ),
+   
+  --Take the difference of that net as-of inbound units and sum(outbound units) of all future from that date. 
+  --Drop those negative balance which means those slot units was sold out. 
+cte2 as (
+    select t1.*, 
+    inboundqty-outboundqty as diff, row_number() over(order by event_datetime asc)  as rownr, max(event_datetime) over() as latest_dt 
+    from cte1  t1 
+   where inboundqty-outboundqty > 0  
+  ),
+
+cte3 as  (
+    --For the first row, we need to take diff which represents the differnce between net as-of inbound units and total outbound sold units. This represents the pending available units from that slot. 
+    --Remaining rows we need to take actual arrived inbound units on that day. They are all not sold because there are still units available to be sold which got inbounded before (FIFO). 
+    select t1.*,  case when rownr=1 then diff else inboundqtydelta end as units_available,
+    case when EXTRACT(day from latest_dt-event_datetime)<=90 then '0 to 90' 
+         when EXTRACT(day from latest_dt-event_datetime)<=180 then '91 to 180'   
+         when EXTRACT(day from latest_dt-event_datetime)<=270 then '181 to 270'     
+         when EXTRACT(day from latest_dt-event_datetime)<=365 then '271 to 365'     
+    end as days_bin 
+    from cte2  t1 
+  )
+  
+select days_bin, sum(units_available) as units from cte3 
+group by 1 
+ 
+  
+  
